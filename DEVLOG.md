@@ -692,3 +692,121 @@ Here's a summary of all the changes:
 - **Book Rankings tab** — New tab showing the sportsbook quality rankings table with grade badges (A-F), per-market vig columns, best-odds count, and value-opp count. Sharpest/juiciest books are highlighted.
 - All other tabs (Anomalies, Best Odds & Vig, Ask AI) continue to work with the new data shape.
 
+
+
+# JSON data search function
+_Exported on 4/11/2026 at 10:44:40 EDT from Cursor (3.0.13)_
+
+---
+
+**User**
+
+Create another function that can search the JSON file and pick up the exact data that is necessary to asnwe questions if user asks about a particular dataset.  @app/api/chat/route.ts put the function in lib directory 
+
+---
+
+**Cursor**
+
+Let me start by reading the current chat route and understanding the data structure.
+
+Now let me see the full JSON structure to understand all the data fields.
+
+Now I have a clear picture of the data structure. Let me create a search function that can intelligently extract the exact subset of data from the JSON file based on what the user is asking about.
+
+Now let me update the chat route to use this search function so only relevant data gets sent to Claude instead of the entire dataset.
+
+Clean. Now let me wire it into the chat route so the search function is used to pull only the relevant slice of data for each user question.
+
+Let me verify the final state of both files.
+
+Here's what I built:
+
+### `lib/data-search.ts` — Targeted dataset search
+
+The `searchOddsData(query)` function takes a natural-language user question and returns only the relevant slice of `data/data.json`. It works through intent classification:
+
+**Intent detection** — parses the query to figure out what the user is asking about:
+- **Game** — "What are the Lakers odds?" → filters to records where Lakers are home or away
+- **Sportsbook** — "What does DraftKings have?" → filters to DraftKings records only
+- **Market** — "Show me the spreads" → strips records to just the spread market
+- **Game + Sportsbook** — "Celtics on FanDuel" → intersection of both filters
+- **Game + Market** — "Lakers moneyline" → team-filtered, market-scoped
+- **Stale data** — "Any outdated lines?" → finds records >2 hours behind the freshest update for their game
+- **All** — fallback when no specific intent is detected
+
+**Fuzzy matching** — team names and sportsbooks are matched via alias dictionaries (e.g., "Celtics", "BOS", "Boston" all resolve to "Boston Celtics"; "DK", "Draft Kings" resolve to "DraftKings").
+
+### Integration with `app/api/chat/route.ts`
+
+The chat route now calls `searchOddsData()` on the latest user message before building the context block. The targeted raw odds data is injected as an additional `TARGETED RAW ODDS DATA` section in the prompt, so Claude gets both the pre-computed analysis **and** the exact underlying records needed to answer the specific question — without flooding the context with 80 irrelevant records.
+
+---
+
+**User**
+
+is this a good way to do this? Or should we create a different approch like tool use ?
+
+---
+
+**Cursor**
+
+Good question. Let me think about this properly by comparing the two approaches in the context of your setup.
+
+**Current approach (keyword search):** The `data-search.ts` function uses regex/alias matching to guess what the user is asking about, then pre-filters the data before sending it to Claude. It's fast and deterministic, but brittle — if a user phrases something unexpectedly (e.g., "which book has the tightest juice on the BOS/LAL game?"), the keyword matcher might miss the intent or match incorrectly. It also can't compose multiple filters dynamically.
+
+**Tool use approach:** You give Claude a set of tools (search by game, search by sportsbook, search by market, find stale lines, etc.) and let it decide which tool(s) to call based on the question. Claude is much better at understanding intent than regex. It can also chain multiple calls — e.g., first look up the game, then narrow to a specific sportsbook.
+
+For a betting odds dataset like this, **tool use is the stronger approach** because:
+
+1. **Intent classification is Claude's strength** — it already understands "tightest juice" means lowest vig, "which book" means sportsbook comparison, etc. You don't need to replicate that with regex.
+2. **Composability** — Claude can call multiple tools per turn (e.g., get Lakers data + get DraftKings data + compare).
+3. **Precision** — the model only pulls what it actually needs, rather than you guessing upfront.
+4. **Maintainability** — adding a new query type means adding a tool, not debugging regex patterns.
+
+Want me to refactor this to a tool-use architecture? The tools would be simple data-retrieval functions (get game odds, get sportsbook odds, find stale lines, etc.) and Claude would orchestrate them via the Anthropic tool-use API. The alias dictionaries and filtering logic you already have would be reused inside the tool implementations.
+
+---
+
+**User**
+
+Let's update the approch to do tool use on the dataset 
+
+---
+
+**Cursor**
+
+Let me read the current files to understand the full picture before refactoring.
+
+Good, I have the full picture. Now let me build the tool-use architecture. I'll rewrite `lib/data-search.ts` as the tool definitions + executor, then refactor the chat route to run a tool-use loop.
+
+Now refactor the chat route to run Claude with tools in a loop.
+
+Both files are clean. Here's a summary of the refactored architecture:
+
+---
+
+### How it works now
+
+**Before:** Regex-based keyword search pre-filtered data, injected the full result into the context, and Claude got one shot to answer.
+
+**After:** Claude gets 8 tools and decides what to query based on the user's question. The chat route runs a **tool-use loop** (up to 10 rounds) — Claude can call multiple tools per turn and chain lookups until it has enough data to answer.
+
+### The 8 tools in `lib/data-search.ts`
+
+| Tool | What it does |
+|---|---|
+| `list_games` | Discover all games in the slate (IDs, teams, times) |
+| `get_game_odds` | All sportsbook records for a game (by ID or team name) |
+| `get_sportsbook_odds` | All game lines from a specific book |
+| `get_market_odds` | Pull spread/moneyline/total across the slate, optionally filtered to a game |
+| `compare_sportsbooks_for_game` | Side-by-side book comparison for a game |
+| `find_best_odds` | Best available price on each side of each market for a game |
+| `get_line_for_game_and_book` | Pinpoint lookup: one book, one game |
+| `find_stale_lines` | Find lines >2 hours behind the freshest update |
+
+### The loop in `app/api/chat/route.ts`
+
+The route sends the pre-computed analysis context (anomalies, vig, value plays, briefing) as a prefill, then passes the user's messages along with the tool definitions. When Claude responds with `tool_use`, the route executes each tool call via `executeTool()`, appends the results, and loops back. When Claude responds with `end_turn`, the final text is returned to the client.
+
+The alias dictionaries (team nicknames, sportsbook abbreviations) are preserved inside the tool implementations so Claude can pass "Lakers" or "DK" and get resolved results.
+

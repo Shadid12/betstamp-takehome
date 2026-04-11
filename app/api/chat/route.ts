@@ -1,26 +1,36 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { ODDS_TOOLS, executeTool } from "@/lib/data-search";
 
 const client = new Anthropic({ apiKey: process.env.CLAUDE_API_KEY });
 
-const CHAT_SYSTEM_PROMPT = `You are an expert sports betting analyst assistant. You have just completed a comprehensive analysis of today's odds slate, including anomaly detection, best-odds identification, vig calculation, value opportunity surfacing, and a full market briefing.
+const MAX_TOOL_ROUNDS = 10;
 
-CRITICAL: The market analysis data (vig percentages, implied probabilities, best odds, arbitrage, value opportunities) was computed by deterministic code and is mathematically exact. Do NOT re-derive, re-calculate, or round these numbers differently. Quote them verbatim when answering questions.
+const CHAT_SYSTEM_PROMPT = `You are an expert sports betting analyst assistant. You have access to tools that let you query today's odds dataset (10 NBA games × 8 sportsbooks = 80 records).
 
-The user will provide the full context of the analysis results, and then ask follow-up questions. Answer precisely and actionably. Use specific numbers, sportsbook names, odds, lines, and vig percentages. Be concise — the user is a professional.
+The user will also provide pre-computed analysis context (anomalies, vig calculations, value plays, arbitrage, sportsbook rankings, briefing). That analysis was computed by deterministic code and is mathematically exact — quote those numbers verbatim.
+
+TOOL USAGE STRATEGY:
+- Use list_games FIRST if you need to discover which games are in the data.
+- Use get_game_odds or compare_sportsbooks_for_game when the user asks about a specific game.
+- Use get_sportsbook_odds when comparing a specific book across games.
+- Use get_market_odds to pull spread/moneyline/total data across the slate.
+- Use find_best_odds to identify where to get the best price on a game.
+- Use get_line_for_game_and_book for pinpoint lookups ("What does DK have for the Lakers game?").
+- Use find_stale_lines to identify potentially outdated data.
+- You may call multiple tools in a single turn if needed.
 
 GUARDRAIL — SCOPE ENFORCEMENT:
-You may ONLY answer questions that can be fully addressed using the provided analysis data (odds, anomalies, vig, value plays, arbitrage, sportsbook rankings, game snapshots, briefing).
+You may ONLY answer questions addressable using the provided analysis context or the tools.
 
-If the user asks about ANY of the following, respond with: **"This question is out of scope."** followed by a one-sentence explanation of why (e.g. the game/sport/topic is not in the data). Do NOT attempt an answer.
-- Games, teams, or sports NOT present in the provided data
-- Historical stats, win/loss records, player props, injuries, or roster information (unless explicitly in the data)
+If the user asks about ANY of the following, respond with: **"This question is out of scope."** followed by a one-sentence explanation. Do NOT attempt an answer.
+- Games, teams, or sports NOT in the data
+- Historical stats, win/loss records, player props, injuries, or roster info (unless in the data)
 - Future predictions, game outcomes, or score forecasts — you analyze odds markets, not predict results
-- Topics unrelated to sports betting odds analysis (general knowledge, coding, etc.)
-- Any question where answering would require information beyond what is in the provided context
+- Topics unrelated to sports betting odds analysis
 
-When in doubt, err on the side of saying the question is out of scope rather than fabricating or inferring an answer.
+When in doubt, err on the side of saying the question is out of scope.
 
-Format your responses in Markdown for readability. Use bold for key callouts, code for odds/numbers when helpful, and bullet points for lists.`;
+Format responses in Markdown. Use bold for key callouts, code for odds/numbers, and bullet points for lists. Be concise — the user is a professional.`;
 
 type ChatMessage = {
   role: "user" | "assistant";
@@ -48,7 +58,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const contextBlock = `Here is the full analysis context for today's slate:
+    const contextBlock = `Here is the pre-computed analysis context for today's slate:
 
 ANOMALY DETECTION RESULTS:
 ${JSON.stringify(context.anomalies, null, 2)}
@@ -57,7 +67,9 @@ MARKET ANALYSIS RESULTS (computed by deterministic code — all numbers are exac
 ${JSON.stringify(context.analysis, null, 2)}
 
 DAILY BRIEFING:
-${context.briefing}`;
+${context.briefing}
+
+You also have tools to query the raw odds dataset directly for any specific data the user asks about.`;
 
     const anthropicMessages: Anthropic.MessageParam[] = [
       {
@@ -67,7 +79,7 @@ ${context.briefing}`;
       {
         role: "assistant",
         content:
-          "I have the full analysis context loaded. I'm ready to answer any follow-up questions about the odds data, anomalies, value opportunities, vig calculations, or any specific games and sportsbooks.",
+          "I have the pre-computed analysis loaded and tools ready to query the raw odds dataset. I can answer questions about specific games, sportsbooks, markets, value plays, anomalies, or anything else in today's slate.",
       },
       ...messages.map((m) => ({
         role: m.role as "user" | "assistant",
@@ -75,17 +87,53 @@ ${context.briefing}`;
       })),
     ];
 
-    const response = await client.messages.create({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 2048,
-      system: CHAT_SYSTEM_PROMPT,
-      messages: anthropicMessages,
-    });
+    let finalText = "";
 
-    const text =
-      response.content[0].type === "text" ? response.content[0].text : "";
+    for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+      const response = await client.messages.create({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 2048,
+        system: CHAT_SYSTEM_PROMPT,
+        tools: ODDS_TOOLS,
+        messages: anthropicMessages,
+      });
 
-    return Response.json({ message: text });
+      if (response.stop_reason === "end_turn") {
+        finalText = response.content
+          .filter((b): b is Anthropic.TextBlock => b.type === "text")
+          .map((b) => b.text)
+          .join("");
+        break;
+      }
+
+      if (response.stop_reason === "tool_use") {
+        anthropicMessages.push({ role: "assistant", content: response.content });
+
+        const toolResults: Anthropic.ToolResultBlockParam[] = response.content
+          .filter(
+            (b): b is Anthropic.ToolUseBlock => b.type === "tool_use"
+          )
+          .map((toolCall) => ({
+            type: "tool_result" as const,
+            tool_use_id: toolCall.id,
+            content: executeTool(
+              toolCall.name,
+              toolCall.input as Record<string, unknown>
+            ),
+          }));
+
+        anthropicMessages.push({ role: "user", content: toolResults });
+        continue;
+      }
+
+      finalText = response.content
+        .filter((b): b is Anthropic.TextBlock => b.type === "text")
+        .map((b) => b.text)
+        .join("");
+      break;
+    }
+
+    return Response.json({ message: finalText });
   } catch (error) {
     console.error("Chat failed:", error);
     return Response.json(
