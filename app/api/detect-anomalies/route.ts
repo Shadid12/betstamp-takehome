@@ -24,6 +24,9 @@ Return your analysis as a JSON array of anomaly objects. Each anomaly must have:
 - "description": a concise explanation of the anomaly (1-2 sentences)
 - "details": object with the anomalous value(s) and what the consensus/expected values are
 
+GUARDRAIL — SCOPE ENFORCEMENT:
+Only analyze data that is explicitly present in the provided odds payload. Do NOT fabricate games, sportsbooks, odds values, or anomalies that are not supported by the input data. If the data is insufficient to determine whether something is an anomaly, omit it rather than guessing. Return an empty array [] if no anomalies are detected.
+
 Return ONLY the JSON array, no markdown fences, no extra text.`;
 
 const BRIEFING_SYSTEM_PROMPT = `You are a senior sports betting market analyst writing a daily briefing for a trading desk. Your briefings are concise, data-driven, and actionable. You write in a professional but readable tone — like a Bloomberg terminal note crossed with a sharp analyst memo.
@@ -53,7 +56,10 @@ Rules:
 - "analyst_notes" should be 1-3 concise, actionable observations.
 - Be specific with numbers — use actual odds, lines, vig percentages, and sportsbook names.
 - Do not hedge or add disclaimers. Write as if the reader is a professional who will act on this information.
-- Return ONLY the JSON object, no markdown fences, no extra text.`;
+- Return ONLY the JSON object, no markdown fences, no extra text.
+
+GUARDRAIL — SCOPE ENFORCEMENT:
+Only reference games, sportsbooks, odds, and analysis numbers that are explicitly present in the provided data. Do NOT invent or infer data points that are not in the input. If a game has insufficient data for a meaningful snapshot, say so in its headline rather than fabricating details.`;
 
 async function callWithRetry<T>(
   fn: () => Promise<T>,
