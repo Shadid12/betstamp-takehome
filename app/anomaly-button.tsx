@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
+import ReactMarkdown from "react-markdown";
 
 type AnomalyDetail = {
   game_id: string;
@@ -484,107 +485,26 @@ function StatCard({
 }
 
 function MarkdownRenderer({ content }: { content: string }) {
-  const lines = content.split("\n");
-  const elements: React.ReactNode[] = [];
-  let i = 0;
-  let key = 0;
-
-  while (i < lines.length) {
-    const line = lines[i];
-
-    if (line.startsWith("## ")) {
-      elements.push(
-        <h2 key={key++}>{renderInline(line.slice(3))}</h2>
-      );
-      i++;
-    } else if (line.startsWith("### ")) {
-      elements.push(
-        <h3 key={key++}>{renderInline(line.slice(4))}</h3>
-      );
-      i++;
-    } else if (line.startsWith("# ")) {
-      elements.push(
-        <h1 key={key++}>{renderInline(line.slice(2))}</h1>
-      );
-      i++;
-    } else if (line.startsWith("- ") || line.startsWith("* ")) {
-      const items: string[] = [];
-      while (
-        i < lines.length &&
-        (lines[i].startsWith("- ") || lines[i].startsWith("* "))
-      ) {
-        items.push(lines[i].slice(2));
-        i++;
-      }
-      elements.push(
-        <ul key={key++}>
-          {items.map((item, idx) => (
-            <li key={idx}>{renderInline(item)}</li>
-          ))}
-        </ul>
-      );
-    } else if (/^\d+\.\s/.test(line)) {
-      const items: string[] = [];
-      while (i < lines.length && /^\d+\.\s/.test(lines[i])) {
-        items.push(lines[i].replace(/^\d+\.\s/, ""));
-        i++;
-      }
-      elements.push(
-        <ol key={key++}>
-          {items.map((item, idx) => (
-            <li key={idx}>{renderInline(item)}</li>
-          ))}
-        </ol>
-      );
-    } else if (line.trim() === "") {
-      i++;
-    } else {
-      let paragraph = line;
-      i++;
-      while (
-        i < lines.length &&
-        lines[i].trim() !== "" &&
-        !lines[i].startsWith("#") &&
-        !lines[i].startsWith("- ") &&
-        !lines[i].startsWith("* ") &&
-        !/^\d+\.\s/.test(lines[i])
-      ) {
-        paragraph += " " + lines[i];
-        i++;
-      }
-      elements.push(
-        <p key={key++}>{renderInline(paragraph)}</p>
-      );
-    }
-  }
-
-  return <>{elements}</>;
-}
-
-function renderInline(text: string): React.ReactNode {
-  const parts: React.ReactNode[] = [];
-  const regex = /(\*\*(.+?)\*\*)|(`(.+?)`)/g;
-  let lastIndex = 0;
-  let match;
-  let key = 0;
-
-  while ((match = regex.exec(text)) !== null) {
-    if (match.index > lastIndex) {
-      parts.push(text.slice(lastIndex, match.index));
-    }
-    if (match[2]) {
-      parts.push(<strong key={key++}>{match[2]}</strong>);
-    } else if (match[4]) {
-      parts.push(<code key={key++}>{match[4]}</code>);
-    }
-    lastIndex = regex.lastIndex;
-  }
-
-  if (lastIndex < text.length) {
-    parts.push(text.slice(lastIndex));
-  }
-
-  return parts.length === 1 ? parts[0] : parts;
+  return (
+    <ReactMarkdown
+      components={{
+        table: ({ children, ...props }) => (
+          <div className="overflow-x-auto my-2">
+            <table {...props} className="min-w-full text-xs">
+              {children}
+            </table>
+          </div>
+        ),
+        a: ({ children, ...props }) => (
+          <a {...props} target="_blank" rel="noopener noreferrer">
+            {children}
+          </a>
+        ),
+      }}
+    >
+      {content}
+    </ReactMarkdown>
+  );
 }
 
 function ToolCallIndicator({ tools, isLive }: { tools: ToolEvent[]; isLive: boolean }) {

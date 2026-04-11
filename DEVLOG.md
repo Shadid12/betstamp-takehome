@@ -884,3 +884,58 @@ Added a **`ToolCallIndicator`** component and updated `ChatPanel` to stream resp
 
 4. **Status messages** ("Thinking...") appear as a subtle indicator before any tools are called.
 
+# Markdown formatting issue in chat UI
+_Exported on 4/11/2026 at 11:18:05 EDT from Cursor (3.0.13)_
+
+---
+
+**User**
+
+In the chat UI when the LLM response with markdown it is not formatting correctly 
+
+---
+
+**Cursor**
+
+Let me look at the chat UI code to understand how messages are currently rendered.
+
+Now I can see the issue. The `MarkdownRenderer` component (lines 486-562) is a hand-rolled markdown parser that's quite limited. It doesn't handle many common markdown features like:
+- Tables
+- Code blocks (fenced with ```)
+- Horizontal rules
+- Nested lists
+- Links/URLs
+- Italic text (`*text*`)
+
+The best fix is to replace this custom renderer with `react-markdown`, a proper markdown library. Let me check what's already installed.
+
+I need to install `react-markdown` and `@tailwindcss/typography` (for the `prose` classes to actually work). Let me also check the Tailwind CSS config.
+
+This is Tailwind v4 which uses `@import "tailwindcss"` syntax. The `prose` classes in the template (line 869) won't work without the typography plugin. Let me install the dependencies and fix this properly.
+
+Now let me add the typography plugin. In Tailwind v4, plugins are added via `@plugin` in the CSS file.
+
+Now let me replace the custom `MarkdownRenderer` with `react-markdown` and update the import.
+
+Now replace the custom `MarkdownRenderer` and `renderInline` functions with a thin wrapper around `ReactMarkdown`.
+
+Now let me check for linter errors.
+
+Let me verify the build works.
+
+Build passes cleanly.
+
+Here's what I fixed:
+
+**Problem:** The chat UI was using a hand-rolled `MarkdownRenderer` that only handled a few markdown features (headings, basic lists, bold, inline code). It didn't support tables, code blocks, links, italic text, nested lists, horizontal rules, or many other common markdown elements that LLMs produce.
+
+Additionally, the `prose` Tailwind classes on the message container (line 869) had no effect because the `@tailwindcss/typography` plugin wasn't installed.
+
+**Changes made:**
+
+1. **Installed `react-markdown`** — a full-featured markdown-to-React renderer that handles all standard markdown syntax (tables, fenced code blocks, links, images, nested lists, etc.)
+
+2. **Installed `@tailwindcss/typography`** and added `@plugin "@tailwindcss/typography"` to `globals.css` — this activates the `prose` classes that were already on the assistant message container, giving proper typographic styling to all rendered markdown elements.
+
+3. **Replaced the custom `MarkdownRenderer` and `renderInline` functions** (~100 lines of fragile regex parsing) with a clean `ReactMarkdown` wrapper (~15 lines) that includes custom table overflow handling and safe external link behavior.
+
