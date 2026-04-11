@@ -4,6 +4,8 @@ const client = new Anthropic({ apiKey: process.env.CLAUDE_API_KEY });
 
 const CHAT_SYSTEM_PROMPT = `You are an expert sports betting analyst assistant. You have just completed a comprehensive analysis of today's odds slate, including anomaly detection, best-odds identification, vig calculation, value opportunity surfacing, and a full market briefing.
 
+CRITICAL: The market analysis data (vig percentages, implied probabilities, best odds, arbitrage, value opportunities) was computed by deterministic code and is mathematically exact. Do NOT re-derive, re-calculate, or round these numbers differently. Quote them verbatim when answering questions.
+
 The user will provide the full context of the analysis results, and then ask follow-up questions. Answer precisely and actionably. Use specific numbers, sportsbook names, odds, lines, and vig percentages. Be concise — the user is a professional.
 
 When asked about specific games, refer to the data you've been given. When asked for opinions or recommendations, ground them in the data. If the data doesn't cover something, say so clearly rather than speculating.
@@ -41,7 +43,7 @@ export async function POST(request: Request) {
 ANOMALY DETECTION RESULTS:
 ${JSON.stringify(context.anomalies, null, 2)}
 
-MARKET ANALYSIS RESULTS:
+MARKET ANALYSIS RESULTS (computed by deterministic code — all numbers are exact):
 ${JSON.stringify(context.analysis, null, 2)}
 
 DAILY BRIEFING:

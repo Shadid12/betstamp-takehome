@@ -54,15 +54,57 @@ type ArbitrageOpportunity = {
   description: string;
 };
 
+type SportsbookRanking = {
+  sportsbook: string;
+  avg_spread_vig: number;
+  avg_moneyline_vig: number;
+  avg_total_vig: number;
+  avg_combined_vig: number;
+  games_with_best_odds: number;
+  total_value_opps_offered: number;
+  rank: number;
+  grade: "A" | "B" | "C" | "D" | "F";
+};
+
+type TopValuePlay = {
+  rank: number;
+  game_id: string;
+  home_team: string;
+  away_team: string;
+  market: string;
+  side: string;
+  sportsbook: string;
+  odds: number;
+  consensus_odds: number;
+  edge_cents: number;
+  edge_description: string;
+};
+
+type GameSnapshot = {
+  game_id: string;
+  headline: string;
+};
+
+type DailyBriefing = {
+  market_overview: string;
+  anomalies: AnomalyDetail[];
+  top_value_plays: TopValuePlay[];
+  arbitrage_opportunities: ArbitrageOpportunity[];
+  sportsbook_rankings: SportsbookRanking[];
+  game_snapshots: GameSnapshot[];
+  analyst_notes: string[];
+};
+
 type Analysis = {
   games: GameAnalysis[];
   arbitrage_opportunities: ArbitrageOpportunity[];
+  sportsbook_rankings: SportsbookRanking[];
+  top_value_plays: TopValuePlay[];
 };
 
 type DetectionResult = {
-  anomalies: AnomalyDetail[];
+  daily_briefing: DailyBriefing;
   analysis: Analysis;
-  briefing: string;
   meta: {
     model: string;
     games_analyzed: number;
@@ -97,13 +139,13 @@ type ChatMessage = {
   content: string;
 };
 
-type TabId = "briefing" | "anomalies" | "best-odds" | "value" | "chat";
+type TabId = "overview" | "anomalies" | "value" | "rankings" | "best-odds" | "chat";
 
 export default function AnomalyButton() {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<DetectionResult | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<TabId>("briefing");
+  const [activeTab, setActiveTab] = useState<TabId>("overview");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
 
   async function handleClick() {
@@ -127,30 +169,31 @@ export default function AnomalyButton() {
     }
   }
 
+  const briefing = result?.daily_briefing;
+
   const tabs: { id: TabId; label: string; count?: number }[] = [
-    {
-      id: "briefing",
-      label: "Daily Briefing",
-    },
+    { id: "overview", label: "Market Overview" },
     {
       id: "anomalies",
       label: "Anomalies",
-      count: result?.anomalies.length,
+      count: briefing?.anomalies.length,
+    },
+    {
+      id: "value",
+      label: "Top Value",
+      count: briefing
+        ? briefing.top_value_plays.length + briefing.arbitrage_opportunities.length
+        : undefined,
+    },
+    {
+      id: "rankings",
+      label: "Book Rankings",
+      count: briefing?.sportsbook_rankings.length,
     },
     {
       id: "best-odds",
       label: "Best Odds & Vig",
       count: result?.analysis.games.length,
-    },
-    {
-      id: "value",
-      label: "Value Opportunities",
-      count: result
-        ? result.analysis.games.reduce(
-            (s, g) => s + g.value_opportunities.length,
-            0
-          ) + (result.analysis.arbitrage_opportunities?.length ?? 0)
-        : undefined,
     },
     {
       id: "chat",
@@ -221,7 +264,7 @@ export default function AnomalyButton() {
         </div>
       )}
 
-      {result && (
+      {result && briefing && (
         <div className="mt-6 space-y-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3 text-xs text-zinc-400 dark:text-zinc-500">
@@ -233,12 +276,12 @@ export default function AnomalyButton() {
           </div>
 
           {/* Tabs */}
-          <div className="flex gap-1 rounded-lg bg-zinc-100 p-1 dark:bg-zinc-800">
+          <div className="flex gap-1 rounded-lg bg-zinc-100 p-1 dark:bg-zinc-800 overflow-x-auto">
             {tabs.map((tab) => (
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id)}
-                className={`flex-1 rounded-md px-3 py-2 text-sm font-medium transition ${
+                className={`flex-1 rounded-md px-3 py-2 text-sm font-medium transition whitespace-nowrap ${
                   activeTab === tab.id
                     ? "bg-white text-zinc-900 shadow-sm dark:bg-zinc-700 dark:text-zinc-100"
                     : "text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
@@ -261,26 +304,32 @@ export default function AnomalyButton() {
           </div>
 
           {/* Tab content */}
-          {activeTab === "briefing" && (
-            <BriefingPanel markdown={result.briefing} />
+          {activeTab === "overview" && (
+            <OverviewPanel briefing={briefing} />
           )}
           {activeTab === "anomalies" && (
-            <AnomaliesPanel anomalies={result.anomalies} />
+            <AnomaliesPanel anomalies={briefing.anomalies} />
+          )}
+          {activeTab === "value" && (
+            <TopValuePanel
+              topPlays={briefing.top_value_plays}
+              arbOpps={briefing.arbitrage_opportunities}
+            />
+          )}
+          {activeTab === "rankings" && (
+            <RankingsPanel rankings={briefing.sportsbook_rankings} />
           )}
           {activeTab === "best-odds" && (
             <BestOddsPanel games={result.analysis.games} />
-          )}
-          {activeTab === "value" && (
-            <ValuePanel analysis={result.analysis} />
           )}
           {activeTab === "chat" && (
             <ChatPanel
               messages={chatMessages}
               setMessages={setChatMessages}
               context={{
-                anomalies: result.anomalies,
+                anomalies: briefing.anomalies,
                 analysis: result.analysis,
-                briefing: result.briefing,
+                briefing: briefing.market_overview,
               }}
             />
           )}
@@ -290,32 +339,136 @@ export default function AnomalyButton() {
   );
 }
 
-function BriefingPanel({ markdown }: { markdown: string }) {
+function OverviewPanel({ briefing }: { briefing: DailyBriefing }) {
+  const highSeverity = briefing.anomalies.filter(a => a.severity === "high");
+  const medSeverity = briefing.anomalies.filter(a => a.severity === "medium");
+
   return (
-    <div className="rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900 overflow-hidden">
-      <div className="border-b border-zinc-100 px-5 py-3 dark:border-zinc-800 flex items-center gap-2">
-        <svg
-          className="h-4 w-4 text-indigo-500 dark:text-indigo-400"
-          fill="none"
-          viewBox="0 0 24 24"
-          strokeWidth={2}
-          stroke="currentColor"
-        >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"
-          />
-        </svg>
-        <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
-          AI Market Briefing
-        </h3>
+    <div className="space-y-4">
+      {/* Market Overview */}
+      <div className="rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900 overflow-hidden">
+        <div className="border-b border-zinc-100 px-5 py-3 dark:border-zinc-800 flex items-center gap-2">
+          <svg className="h-4 w-4 text-indigo-500 dark:text-indigo-400" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
+          </svg>
+          <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+            Market Overview
+          </h3>
+        </div>
+        <div className="px-5 py-4">
+          <p className="text-sm leading-relaxed text-zinc-700 dark:text-zinc-300">
+            {briefing.market_overview}
+          </p>
+        </div>
       </div>
-      <div className="px-6 py-5">
-        <article className="prose prose-sm prose-zinc dark:prose-invert max-w-none prose-headings:text-base prose-headings:font-semibold prose-headings:mt-6 prose-headings:mb-2 first:prose-headings:mt-0 prose-p:leading-relaxed prose-li:leading-relaxed prose-strong:text-zinc-900 dark:prose-strong:text-zinc-100 prose-code:text-indigo-600 dark:prose-code:text-indigo-400 prose-code:before:content-none prose-code:after:content-none">
-          <MarkdownRenderer content={markdown} />
-        </article>
+
+      {/* Quick stats row */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <StatCard
+          label="Anomalies"
+          value={briefing.anomalies.length}
+          accent={highSeverity.length > 0 ? "red" : medSeverity.length > 0 ? "amber" : "green"}
+          sub={highSeverity.length > 0 ? `${highSeverity.length} high severity` : "All clear"}
+        />
+        <StatCard
+          label="Value Plays"
+          value={briefing.top_value_plays.length}
+          accent="emerald"
+          sub={briefing.top_value_plays[0] ? `Best: ${briefing.top_value_plays[0].edge_cents.toFixed(1)}¢ edge` : "None found"}
+        />
+        <StatCard
+          label="Arb Opps"
+          value={briefing.arbitrage_opportunities.length}
+          accent={briefing.arbitrage_opportunities.length > 0 ? "amber" : "zinc"}
+          sub={briefing.arbitrage_opportunities[0] ? `+${briefing.arbitrage_opportunities[0].profit_margin_pct.toFixed(2)}% profit` : "None detected"}
+        />
+        <StatCard
+          label="Sharpest Book"
+          value={briefing.sportsbook_rankings[0]?.sportsbook ?? "—"}
+          accent="indigo"
+          sub={briefing.sportsbook_rankings[0] ? `${briefing.sportsbook_rankings[0].avg_combined_vig.toFixed(1)}% avg vig` : ""}
+          isText
+        />
       </div>
+
+      {/* Game Snapshots */}
+      {briefing.game_snapshots.length > 0 && (
+        <div className="rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900 overflow-hidden">
+          <div className="border-b border-zinc-100 px-5 py-3 dark:border-zinc-800">
+            <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+              Game-by-Game Snapshot
+            </h3>
+          </div>
+          <div className="divide-y divide-zinc-100 dark:divide-zinc-800">
+            {briefing.game_snapshots.map((snap) => (
+              <div key={snap.game_id} className="px-5 py-3">
+                <p className="text-xs font-medium text-indigo-600 dark:text-indigo-400 mb-1">
+                  {snap.game_id}
+                </p>
+                <p className="text-sm text-zinc-700 dark:text-zinc-300 leading-relaxed">
+                  {snap.headline}
+                </p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Analyst Notes */}
+      {briefing.analyst_notes.length > 0 && (
+        <div className="rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900 overflow-hidden">
+          <div className="border-b border-zinc-100 px-5 py-3 dark:border-zinc-800">
+            <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+              Analyst Notes
+            </h3>
+          </div>
+          <ul className="px-5 py-4 space-y-2">
+            {briefing.analyst_notes.map((note, i) => (
+              <li key={i} className="flex gap-2 text-sm text-zinc-700 dark:text-zinc-300">
+                <span className="text-indigo-400 dark:text-indigo-500 mt-0.5 shrink-0">&#8226;</span>
+                <span className="leading-relaxed">{note}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StatCard({
+  label,
+  value,
+  accent,
+  sub,
+  isText,
+}: {
+  label: string;
+  value: string | number;
+  accent: string;
+  sub: string;
+  isText?: boolean;
+}) {
+  const accentColors: Record<string, string> = {
+    red: "text-red-600 dark:text-red-400",
+    amber: "text-amber-600 dark:text-amber-400",
+    green: "text-emerald-600 dark:text-emerald-400",
+    emerald: "text-emerald-600 dark:text-emerald-400",
+    indigo: "text-indigo-600 dark:text-indigo-400",
+    zinc: "text-zinc-500 dark:text-zinc-400",
+  };
+
+  return (
+    <div className="rounded-xl border border-zinc-200 bg-white px-4 py-3 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+      <p className="text-xs font-medium uppercase tracking-wider text-zinc-400 dark:text-zinc-500">
+        {label}
+      </p>
+      <p className={`mt-1 ${isText ? "text-lg" : "text-2xl"} font-bold ${accentColors[accent] ?? accentColors.zinc}`}>
+        {value}
+      </p>
+      <p className="mt-0.5 text-xs text-zinc-400 dark:text-zinc-500 truncate">
+        {sub}
+      </p>
     </div>
   );
 }
@@ -901,25 +1054,21 @@ function BestOddsMarketCard({
   );
 }
 
-function ValuePanel({ analysis }: { analysis: Analysis }) {
-  const allValueOpps = analysis.games.flatMap((g) =>
-    g.value_opportunities.map((v) => ({
-      ...v,
-      game_id: g.game_id,
-      home_team: g.home_team,
-      away_team: g.away_team,
-    }))
-  );
-  const arbOpps = analysis.arbitrage_opportunities ?? [];
-
+function TopValuePanel({
+  topPlays,
+  arbOpps,
+}: {
+  topPlays: TopValuePlay[];
+  arbOpps: ArbitrageOpportunity[];
+}) {
   return (
     <div className="space-y-6">
-      {/* Value opportunities */}
+      {/* Top value plays */}
       <div>
         <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100 mb-3">
-          Value Opportunities
+          Top Value Plays
         </h3>
-        {allValueOpps.length === 0 ? (
+        {topPlays.length === 0 ? (
           <div className="rounded-xl border border-zinc-200 bg-zinc-50 px-5 py-6 text-center dark:border-zinc-800 dark:bg-zinc-900">
             <p className="text-sm text-zinc-400 dark:text-zinc-500">
               No significant value opportunities found.
@@ -927,14 +1076,17 @@ function ValuePanel({ analysis }: { analysis: Analysis }) {
           </div>
         ) : (
           <div className="space-y-3">
-            {allValueOpps.map((v, i) => (
+            {topPlays.map((v) => (
               <div
-                key={`${v.game_id}-${v.market}-${v.side}-${i}`}
+                key={`${v.game_id}-${v.market}-${v.side}-${v.rank}`}
                 className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900"
               >
                 <div className="flex flex-wrap items-start gap-2 mb-2">
+                  <span className="inline-flex items-center rounded-full bg-indigo-100 px-2.5 py-0.5 text-xs font-bold text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-300">
+                    #{v.rank}
+                  </span>
                   <span className="inline-flex items-center rounded-full bg-emerald-100 px-2.5 py-0.5 text-xs font-medium text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300">
-                    VALUE
+                    {v.edge_cents.toFixed(1)}¢ edge
                   </span>
                   <span className="inline-flex items-center rounded-full bg-zinc-100 px-2.5 py-0.5 text-xs font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
                     {v.market}
@@ -1025,6 +1177,100 @@ function ValuePanel({ analysis }: { analysis: Analysis }) {
             ))}
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+function RankingsPanel({ rankings }: { rankings: SportsbookRanking[] }) {
+  const GRADE_STYLES: Record<string, string> = {
+    A: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300",
+    B: "bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300",
+    C: "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300",
+    D: "bg-orange-100 text-orange-800 dark:bg-orange-900/40 dark:text-orange-300",
+    F: "bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300",
+  };
+
+  return (
+    <div className="rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900 overflow-hidden">
+      <div className="border-b border-zinc-100 px-5 py-3 dark:border-zinc-800">
+        <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+          Sportsbook Quality Rankings
+        </h3>
+        <p className="text-xs text-zinc-400 dark:text-zinc-500 mt-0.5">
+          Ranked by average vig across all markets and games. Lower vig = sharper book.
+        </p>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-zinc-100 dark:border-zinc-800 text-left text-xs font-medium uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
+              <th className="px-5 py-3">Rank</th>
+              <th className="px-5 py-3">Sportsbook</th>
+              <th className="px-5 py-3 text-center">Grade</th>
+              <th className="px-5 py-3 text-right">Spread Vig</th>
+              <th className="px-5 py-3 text-right">ML Vig</th>
+              <th className="px-5 py-3 text-right">Total Vig</th>
+              <th className="px-5 py-3 text-right">Avg Vig</th>
+              <th className="px-5 py-3 text-right">Best Odds</th>
+              <th className="px-5 py-3 text-right">Value Opps</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rankings.map((r) => (
+              <tr
+                key={r.sportsbook}
+                className={`border-t border-zinc-50 dark:border-zinc-800/50 ${
+                  r.rank === 1
+                    ? "bg-indigo-50/50 dark:bg-indigo-950/20"
+                    : r.rank === rankings.length
+                      ? "bg-red-50/30 dark:bg-red-950/10"
+                      : ""
+                }`}
+              >
+                <td className="px-5 py-3 font-mono text-zinc-500 dark:text-zinc-400">
+                  {r.rank}
+                </td>
+                <td className="px-5 py-3 font-medium text-zinc-900 dark:text-zinc-100 whitespace-nowrap">
+                  {r.sportsbook}
+                  {r.rank === 1 && (
+                    <span className="ml-2 text-[10px] font-semibold text-indigo-500 dark:text-indigo-400">
+                      SHARPEST
+                    </span>
+                  )}
+                  {r.rank === rankings.length && (
+                    <span className="ml-2 text-[10px] font-semibold text-red-500 dark:text-red-400">
+                      JUICIEST
+                    </span>
+                  )}
+                </td>
+                <td className="px-5 py-3 text-center">
+                  <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-bold ${GRADE_STYLES[r.grade] ?? GRADE_STYLES.C}`}>
+                    {r.grade}
+                  </span>
+                </td>
+                <td className="px-5 py-3 text-right font-mono text-zinc-700 dark:text-zinc-300">
+                  {r.avg_spread_vig.toFixed(1)}%
+                </td>
+                <td className="px-5 py-3 text-right font-mono text-zinc-700 dark:text-zinc-300">
+                  {r.avg_moneyline_vig.toFixed(1)}%
+                </td>
+                <td className="px-5 py-3 text-right font-mono text-zinc-700 dark:text-zinc-300">
+                  {r.avg_total_vig.toFixed(1)}%
+                </td>
+                <td className="px-5 py-3 text-right font-mono font-semibold text-zinc-900 dark:text-zinc-100">
+                  {r.avg_combined_vig.toFixed(1)}%
+                </td>
+                <td className="px-5 py-3 text-right font-mono text-zinc-700 dark:text-zinc-300">
+                  {r.games_with_best_odds}
+                </td>
+                <td className="px-5 py-3 text-right font-mono text-zinc-700 dark:text-zinc-300">
+                  {r.total_value_opps_offered}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   );
