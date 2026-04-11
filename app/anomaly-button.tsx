@@ -134,9 +134,19 @@ function formatVig(vig: number) {
   return `${vig.toFixed(1)}%`;
 }
 
+type ToolEvent = {
+  type: "tool_call";
+  tool: string;
+  label: string;
+  input: Record<string, unknown>;
+  done?: boolean;
+  records?: number | null;
+};
+
 type ChatMessage = {
   role: "user" | "assistant";
   content: string;
+  toolCalls?: ToolEvent[];
 };
 
 type TabId = "overview" | "anomalies" | "value" | "rankings" | "best-odds" | "chat";
@@ -577,6 +587,68 @@ function renderInline(text: string): React.ReactNode {
   return parts.length === 1 ? parts[0] : parts;
 }
 
+function ToolCallIndicator({ tools, isLive }: { tools: ToolEvent[]; isLive: boolean }) {
+  if (tools.length === 0) return null;
+
+  return (
+    <div className="flex justify-start">
+      <div className="max-w-[85%] space-y-1.5">
+        {tools.map((tool, i) => (
+          <div
+            key={`${tool.tool}-${i}`}
+            className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-xs transition-all ${
+              tool.done
+                ? "border-emerald-200 bg-emerald-50 dark:border-emerald-800/60 dark:bg-emerald-950/40"
+                : "border-indigo-200 bg-indigo-50 dark:border-indigo-800/60 dark:bg-indigo-950/40"
+            }`}
+          >
+            {tool.done ? (
+              <svg className="h-3.5 w-3.5 shrink-0 text-emerald-500 dark:text-emerald-400" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+              </svg>
+            ) : (
+              <svg className="h-3.5 w-3.5 shrink-0 animate-spin text-indigo-500 dark:text-indigo-400" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+            )}
+            <span className={`font-medium ${tool.done ? "text-emerald-700 dark:text-emerald-300" : "text-indigo-700 dark:text-indigo-300"}`}>
+              {tool.label}
+            </span>
+            {tool.input && Object.keys(tool.input).length > 0 && (
+              <span className="text-zinc-400 dark:text-zinc-500">
+                {formatToolInput(tool.input)}
+              </span>
+            )}
+            {tool.done && tool.records != null && (
+              <span className="rounded-full bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300">
+                {tool.records} {tool.records === 1 ? "result" : "results"}
+              </span>
+            )}
+          </div>
+        ))}
+        {isLive && tools.length > 0 && tools.every(t => t.done) && (
+          <div className="flex items-center gap-2 px-3 py-1 text-xs text-zinc-400 dark:text-zinc-500">
+            <svg className="h-3 w-3 animate-spin" fill="none" viewBox="0 0 24 24">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+            </svg>
+            Analyzing results...
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function formatToolInput(input: Record<string, unknown>): string {
+  const parts: string[] = [];
+  for (const [, val] of Object.entries(input)) {
+    if (typeof val === "string") parts.push(val);
+  }
+  return parts.length > 0 ? `(${parts.join(", ")})` : "";
+}
+
 function ChatPanel({
   messages,
   setMessages,
@@ -588,6 +660,8 @@ function ChatPanel({
 }) {
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
+  const [liveTools, setLiveTools] = useState<ToolEvent[]>([]);
+  const [statusText, setStatusText] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -597,7 +671,7 @@ function ChatPanel({
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages, scrollToBottom]);
+  }, [messages, liveTools, scrollToBottom]);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -612,12 +686,17 @@ function ChatPanel({
     setMessages(updatedMessages);
     setInput("");
     setSending(true);
+    setLiveTools([]);
+    setStatusText(null);
 
     try {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: updatedMessages, context }),
+        body: JSON.stringify({
+          messages: updatedMessages.map(m => ({ role: m.role, content: m.content })),
+          context,
+        }),
       });
 
       if (!res.ok) {
@@ -625,12 +704,73 @@ function ChatPanel({
         throw new Error(body?.message ?? `Request failed (${res.status})`);
       }
 
-      const data = await res.json();
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant", content: data.message },
-      ]);
+      const reader = res.body?.getReader();
+      if (!reader) throw new Error("No response stream");
+
+      const decoder = new TextDecoder();
+      let buffer = "";
+      const collectedTools: ToolEvent[] = [];
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const event = JSON.parse(line);
+
+            if (event.type === "status") {
+              setStatusText(event.message);
+            } else if (event.type === "tool_call") {
+              const toolEvent: ToolEvent = {
+                type: "tool_call",
+                tool: event.tool,
+                label: event.label,
+                input: event.input,
+                done: false,
+              };
+              collectedTools.push(toolEvent);
+              setLiveTools([...collectedTools]);
+              setStatusText(null);
+            } else if (event.type === "tool_result") {
+              const match = collectedTools.find(
+                (t) => t.tool === event.tool && !t.done
+              );
+              if (match) {
+                match.done = true;
+                match.records = event.records;
+              }
+              setLiveTools([...collectedTools]);
+            } else if (event.type === "message") {
+              setLiveTools([]);
+              setStatusText(null);
+              const finalTools = collectedTools.length > 0
+                ? collectedTools.map(t => ({ ...t, done: true }))
+                : undefined;
+              setMessages((prev) => [
+                ...prev,
+                {
+                  role: "assistant",
+                  content: event.content,
+                  toolCalls: finalTools,
+                },
+              ]);
+            } else if (event.type === "error") {
+              throw new Error(event.message);
+            }
+          } catch {
+            // skip malformed lines
+          }
+        }
+      }
     } catch (err) {
+      setLiveTools([]);
+      setStatusText(null);
       setMessages((prev) => [
         ...prev,
         {
@@ -689,7 +829,7 @@ function ChatPanel({
 
       {/* Messages area */}
       <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
-        {messages.length === 0 ? (
+        {messages.length === 0 && !sending ? (
           <div className="flex flex-col items-center justify-center h-full py-8">
             <p className="text-sm text-zinc-400 dark:text-zinc-500 mb-4">
               Ask follow-up questions about the analysis
@@ -711,39 +851,61 @@ function ChatPanel({
           </div>
         ) : (
           messages.map((msg, i) => (
-            <div
-              key={i}
-              className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
-            >
+            <div key={i} className="space-y-2">
+              {msg.role === "assistant" && msg.toolCalls && msg.toolCalls.length > 0 && (
+                <ToolCallIndicator tools={msg.toolCalls} isLive={false} />
+              )}
               <div
-                className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm ${
-                  msg.role === "user"
-                    ? "bg-indigo-600 text-white dark:bg-indigo-500"
-                    : "bg-zinc-100 text-zinc-900 dark:bg-zinc-800 dark:text-zinc-100"
-                }`}
+                className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
               >
-                {msg.role === "assistant" ? (
-                  <div className="prose prose-sm prose-zinc dark:prose-invert max-w-none prose-p:leading-relaxed prose-p:my-1.5 prose-li:leading-relaxed prose-headings:text-sm prose-headings:font-semibold prose-headings:mt-3 prose-headings:mb-1 prose-strong:text-zinc-900 dark:prose-strong:text-zinc-100 prose-code:text-indigo-600 dark:prose-code:text-indigo-400 prose-code:before:content-none prose-code:after:content-none">
-                    <MarkdownRenderer content={msg.content} />
-                  </div>
-                ) : (
-                  <span className="whitespace-pre-wrap">{msg.content}</span>
-                )}
+                <div
+                  className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm ${
+                    msg.role === "user"
+                      ? "bg-indigo-600 text-white dark:bg-indigo-500"
+                      : "bg-zinc-100 text-zinc-900 dark:bg-zinc-800 dark:text-zinc-100"
+                  }`}
+                >
+                  {msg.role === "assistant" ? (
+                    <div className="prose prose-sm prose-zinc dark:prose-invert max-w-none prose-p:leading-relaxed prose-p:my-1.5 prose-li:leading-relaxed prose-headings:text-sm prose-headings:font-semibold prose-headings:mt-3 prose-headings:mb-1 prose-strong:text-zinc-900 dark:prose-strong:text-zinc-100 prose-code:text-indigo-600 dark:prose-code:text-indigo-400 prose-code:before:content-none prose-code:after:content-none">
+                      <MarkdownRenderer content={msg.content} />
+                    </div>
+                  ) : (
+                    <span className="whitespace-pre-wrap">{msg.content}</span>
+                  )}
+                </div>
               </div>
             </div>
           ))
         )}
 
         {sending && (
-          <div className="flex justify-start">
-            <div className="rounded-2xl bg-zinc-100 px-4 py-3 dark:bg-zinc-800">
-              <div className="flex items-center gap-1.5">
-                <div className="h-1.5 w-1.5 rounded-full bg-zinc-400 animate-bounce dark:bg-zinc-500" style={{ animationDelay: "0ms" }} />
-                <div className="h-1.5 w-1.5 rounded-full bg-zinc-400 animate-bounce dark:bg-zinc-500" style={{ animationDelay: "150ms" }} />
-                <div className="h-1.5 w-1.5 rounded-full bg-zinc-400 animate-bounce dark:bg-zinc-500" style={{ animationDelay: "300ms" }} />
+          <>
+            {statusText && liveTools.length === 0 && (
+              <div className="flex justify-start">
+                <div className="flex items-center gap-2 rounded-2xl bg-zinc-100 px-4 py-3 dark:bg-zinc-800">
+                  <svg className="h-3.5 w-3.5 animate-spin text-indigo-500 dark:text-indigo-400" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                  <span className="text-xs text-zinc-500 dark:text-zinc-400">{statusText}</span>
+                </div>
               </div>
-            </div>
-          </div>
+            )}
+            {liveTools.length > 0 && (
+              <ToolCallIndicator tools={liveTools} isLive={true} />
+            )}
+            {liveTools.length === 0 && !statusText && (
+              <div className="flex justify-start">
+                <div className="rounded-2xl bg-zinc-100 px-4 py-3 dark:bg-zinc-800">
+                  <div className="flex items-center gap-1.5">
+                    <div className="h-1.5 w-1.5 rounded-full bg-zinc-400 animate-bounce dark:bg-zinc-500" style={{ animationDelay: "0ms" }} />
+                    <div className="h-1.5 w-1.5 rounded-full bg-zinc-400 animate-bounce dark:bg-zinc-500" style={{ animationDelay: "150ms" }} />
+                    <div className="h-1.5 w-1.5 rounded-full bg-zinc-400 animate-bounce dark:bg-zinc-500" style={{ animationDelay: "300ms" }} />
+                  </div>
+                </div>
+              </div>
+            )}
+          </>
         )}
 
         <div ref={messagesEndRef} />

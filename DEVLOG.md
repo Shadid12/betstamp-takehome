@@ -810,3 +810,77 @@ The route sends the pre-computed analysis context (anomalies, vig, value plays, 
 
 The alias dictionaries (team nicknames, sportsbook abbreviations) are preserved inside the tool implementations so Claude can pass "Lakers" or "DK" and get resolved results.
 
+# UI indicators for tool calls
+_Exported on 4/11/2026 at 11:09:26 EDT from Cursor (3.0.13)_
+
+---
+
+**User**
+
+Can you add some indicators in the UI to show tool calls and other deterministic function is being called
+
+---
+
+**Cursor**
+
+Let me start by exploring the codebase to understand the current UI structure and how tool calls work.
+
+Now let me read the key files to understand the current implementation in detail.
+
+Now I have a clear picture. The current chat flow is:
+1. User sends a message, sees a bouncing dots loader
+2. The API route does multiple tool call rounds behind the scenes (up to 10)
+3. Only the final text response is returned
+
+The user wants to see what's happening behind the scenes — which tools Claude is calling, when deterministic functions run, etc. I need to:
+
+1. **Stream tool call events** from the API route instead of returning a single JSON blob
+2. **Update the chat UI** to display real-time indicators showing tool calls as they happen
+
+Let me first update the API route to stream events instead of returning a single JSON response.
+
+Good, the route handler API is standard Web Response/Request. Now let me implement the streaming approach. I'll use NDJSON (newline-delimited JSON) streaming to send events from the API route to the client.
+
+Now I need to add the `TOOL_DESCRIPTIONS` export to `data-search.ts`.
+
+Now let me update the `ChatPanel` and add the tool call indicator components in the UI.
+
+Now let me replace the `ChatPanel` component with the streaming version.
+
+Now let me check for linter errors on both files.
+
+Let me verify the app builds cleanly.
+
+Clean build. Let me now update the todos and verify the final state of the key files.
+
+Here's a summary of what was implemented:
+
+### API Route (`app/api/chat/route.ts`)
+
+Changed from returning a single JSON response to **streaming NDJSON events**. Each line is a JSON object with one of these types:
+
+- **`status`** -- "Thinking..." or "Processing tool results..." while waiting for Claude
+- **`tool_call`** -- emitted when Claude invokes a tool, includes the tool name, a human-readable label, and the input parameters
+- **`tool_result`** -- emitted after a deterministic function executes, includes the record count returned
+- **`message`** -- the final assistant text
+- **`error`** -- if something goes wrong
+
+### Tool Descriptions (`lib/data-search.ts`)
+
+Added a `TOOL_DESCRIPTIONS` map that provides human-readable labels for each tool (e.g., `list_games` -> "Listing today's games", `find_best_odds` -> "Finding best available odds").
+
+### Chat UI (`app/anomaly-button.tsx`)
+
+Added a **`ToolCallIndicator`** component and updated `ChatPanel` to stream responses:
+
+1. **While the AI is working**, you see real-time indicators for each tool call:
+   - A spinning indigo indicator appears when a tool is invoked (e.g., "Fetching game odds (Lakers)")
+   - It transitions to a green checkmark when the tool completes, showing the result count (e.g., "8 results")
+   - An "Analyzing results..." spinner shows while Claude processes the tool outputs
+
+2. **After the response completes**, the tool call indicators are preserved above the assistant message so you can see which functions were used to generate the answer.
+
+3. **Tool inputs** are displayed in a compact format -- e.g., if the AI called `get_game_odds` with `game_id: "Lakers"`, you'll see "Fetching game odds (Lakers)".
+
+4. **Status messages** ("Thinking...") appear as a subtle indicator before any tools are called.
+

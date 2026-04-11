@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { ODDS_TOOLS, executeTool } from "@/lib/data-search";
+import { ODDS_TOOLS, executeTool, TOOL_DESCRIPTIONS } from "@/lib/data-search";
 
 const client = new Anthropic({ apiKey: process.env.CLAUDE_API_KEY });
 
@@ -87,53 +87,102 @@ You also have tools to query the raw odds dataset directly for any specific data
       })),
     ];
 
-    let finalText = "";
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      async start(controller) {
+        function send(event: Record<string, unknown>) {
+          controller.enqueue(encoder.encode(JSON.stringify(event) + "\n"));
+        }
 
-    for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-      const response = await client.messages.create({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 2048,
-        system: CHAT_SYSTEM_PROMPT,
-        tools: ODDS_TOOLS,
-        messages: anthropicMessages,
-      });
+        try {
+          let finalText = "";
 
-      if (response.stop_reason === "end_turn") {
-        finalText = response.content
-          .filter((b): b is Anthropic.TextBlock => b.type === "text")
-          .map((b) => b.text)
-          .join("");
-        break;
-      }
+          for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+            send({ type: "status", message: round === 0 ? "Thinking..." : "Processing tool results..." });
 
-      if (response.stop_reason === "tool_use") {
-        anthropicMessages.push({ role: "assistant", content: response.content });
+            const response = await client.messages.create({
+              model: "claude-sonnet-4-20250514",
+              max_tokens: 2048,
+              system: CHAT_SYSTEM_PROMPT,
+              tools: ODDS_TOOLS,
+              messages: anthropicMessages,
+            });
 
-        const toolResults: Anthropic.ToolResultBlockParam[] = response.content
-          .filter(
-            (b): b is Anthropic.ToolUseBlock => b.type === "tool_use"
-          )
-          .map((toolCall) => ({
-            type: "tool_result" as const,
-            tool_use_id: toolCall.id,
-            content: executeTool(
-              toolCall.name,
-              toolCall.input as Record<string, unknown>
-            ),
-          }));
+            if (response.stop_reason === "end_turn") {
+              finalText = response.content
+                .filter((b): b is Anthropic.TextBlock => b.type === "text")
+                .map((b) => b.text)
+                .join("");
+              break;
+            }
 
-        anthropicMessages.push({ role: "user", content: toolResults });
-        continue;
-      }
+            if (response.stop_reason === "tool_use") {
+              anthropicMessages.push({ role: "assistant", content: response.content });
 
-      finalText = response.content
-        .filter((b): b is Anthropic.TextBlock => b.type === "text")
-        .map((b) => b.text)
-        .join("");
-      break;
-    }
+              const toolCalls = response.content.filter(
+                (b): b is Anthropic.ToolUseBlock => b.type === "tool_use"
+              );
 
-    return Response.json({ message: finalText });
+              for (const toolCall of toolCalls) {
+                send({
+                  type: "tool_call",
+                  tool: toolCall.name,
+                  label: TOOL_DESCRIPTIONS[toolCall.name] ?? toolCall.name,
+                  input: toolCall.input,
+                });
+              }
+
+              const toolResults: Anthropic.ToolResultBlockParam[] = toolCalls.map(
+                (toolCall) => {
+                  const result = executeTool(
+                    toolCall.name,
+                    toolCall.input as Record<string, unknown>
+                  );
+
+                  send({
+                    type: "tool_result",
+                    tool: toolCall.name,
+                    records: countRecords(result),
+                  });
+
+                  return {
+                    type: "tool_result" as const,
+                    tool_use_id: toolCall.id,
+                    content: result,
+                  };
+                }
+              );
+
+              anthropicMessages.push({ role: "user", content: toolResults });
+              continue;
+            }
+
+            finalText = response.content
+              .filter((b): b is Anthropic.TextBlock => b.type === "text")
+              .map((b) => b.text)
+              .join("");
+            break;
+          }
+
+          send({ type: "message", content: finalText });
+        } catch (error) {
+          send({
+            type: "error",
+            message: error instanceof Error ? error.message : "Unknown error",
+          });
+        } finally {
+          controller.close();
+        }
+      },
+    });
+
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "application/x-ndjson",
+        "Transfer-Encoding": "chunked",
+        "Cache-Control": "no-cache",
+      },
+    });
   } catch (error) {
     console.error("Chat failed:", error);
     return Response.json(
@@ -143,5 +192,15 @@ You also have tools to query the raw odds dataset directly for any specific data
       },
       { status: 500 }
     );
+  }
+}
+
+function countRecords(jsonStr: string): number | null {
+  try {
+    const parsed = JSON.parse(jsonStr);
+    if (Array.isArray(parsed)) return parsed.length;
+    return null;
+  } catch {
+    return null;
   }
 }

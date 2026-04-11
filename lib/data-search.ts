@@ -22,6 +22,19 @@ function loadOddsData(): OddsDataset {
   return cachedData;
 }
 
+// ── Human-readable tool labels for the UI ───────────────────────────────────
+
+export const TOOL_DESCRIPTIONS: Record<string, string> = {
+  list_games: "Listing today's games",
+  get_game_odds: "Fetching game odds",
+  get_sportsbook_odds: "Querying sportsbook lines",
+  get_market_odds: "Pulling market data",
+  compare_sportsbooks_for_game: "Comparing sportsbooks",
+  find_stale_lines: "Checking for stale lines",
+  find_best_odds: "Finding best available odds",
+  get_line_for_game_and_book: "Looking up specific line",
+};
+
 // ── Tool definitions (Anthropic format) ─────────────────────────────────────
 
 export const ODDS_TOOLS: Anthropic.Tool[] = [
